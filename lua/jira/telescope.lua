@@ -6,6 +6,11 @@ local M = {}
 local config = require("jira.config")
 local auth = require("jira.auth")
 local client = require("jira.client")
+local history = require("jira.history")
+
+-- Module-level cache for last search
+M._last_query = nil
+M._last_results = nil
 
 --- Open URL in browser (cross-platform)
 ---@param url string URL to open
@@ -110,6 +115,7 @@ function M.show_issues_picker(issues, opts)
 
   pickers.new(opts, {
     prompt_title = "JIRA Issues",
+    results_title = "Enter: open │ C-y: yank URL │ C-k: yank key",
     finder = finders.new_table({
       results = issues,
       entry_maker = function(issue)
@@ -194,18 +200,8 @@ function M.search_issues(opts)
     return
   end
 
-  -- Prompt for JQL
-  local default_jql = config.options.default_jql or ""
-  vim.ui.input({
-    prompt = "JQL Query: ",
-    default = default_jql,
-  }, function(jql)
-    if not jql or jql == "" then
-      vim.notify("Search cancelled", vim.log.levels.WARN)
-      return
-    end
-    M._do_search(jql, opts)
-  end)
+  -- Show query picker (saved queries, history, new query)
+  M.query_picker(opts)
 end
 
 --- Internal: perform the search and show results
@@ -226,6 +222,13 @@ function M._do_search(jql, opts)
       return
     end
 
+    -- Cache results for repeat_last
+    M._last_query = jql
+    M._last_results = issues
+
+    -- Add to history
+    history.add(jql)
+
     local pages_msg = result.pages and result.pages > 1 and string.format(" (%d pages)", result.pages) or ""
     vim.notify(string.format("Found %d issue(s)%s", #issues, pages_msg), vim.log.levels.INFO)
     M.show_issues_picker(issues, opts)
@@ -236,6 +239,187 @@ function M._do_search(jql, opts)
       end
     end,
   })
+end
+
+--- Show query picker (saved queries, history, new query option)
+---@param opts table|nil optional configuration
+function M.query_picker(opts)
+  opts = opts or {}
+
+  local ok, _ = pcall(require, "telescope")
+  if not ok then
+    vim.notify("Telescope is required for JIRA query picker", vim.log.levels.ERROR)
+    return
+  end
+
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+
+  -- Build entries: saved queries, then history, with "New Query" at top
+  local entries = {}
+
+  -- Add "New Query" option
+  table.insert(entries, {
+    type = "new",
+    display_name = "⊕ New Query",
+    jql = nil,
+    desc = "Enter a new JQL query",
+  })
+
+  -- Add saved queries from config
+  local saved = config.options.saved_queries or {}
+  for name, query in pairs(saved) do
+    table.insert(entries, {
+      type = "saved",
+      display_name = "★ " .. name,
+      jql = query.jql,
+      desc = query.desc or query.jql,
+    })
+  end
+
+  -- Add history entries
+  local hist = history.get_all()
+  for _, jql in ipairs(hist) do
+    table.insert(entries, {
+      type = "history",
+      display_name = jql,
+      jql = jql,
+      desc = "Recent query",
+    })
+  end
+
+  pickers.new(opts, {
+    prompt_title = "JIRA Query",
+    results_title = "Enter: run │ C-e: edit │ C-d: delete",
+    finder = finders.new_table({
+      results = entries,
+      entry_maker = function(entry)
+        return {
+          value = entry,
+          display = entry.display_name,
+          ordinal = entry.display_name .. " " .. (entry.desc or ""),
+        }
+      end,
+    }),
+    sorter = conf.generic_sorter(opts),
+    attach_mappings = function(prompt_bufnr, map)
+      -- Default action: run query or open new query prompt
+      actions.select_default:replace(function()
+        local selection = action_state.get_selected_entry()
+        actions.close(prompt_bufnr)
+        if not selection then
+          return
+        end
+
+        local entry = selection.value
+        if entry.type == "new" then
+          -- Open vim.ui.input for new query (schedule to let Telescope close cleanly)
+          vim.schedule(function()
+            local default_jql = config.options.default_jql or ""
+            vim.ui.input({
+              prompt = "JQL Query: ",
+              default = default_jql,
+            }, function(jql)
+              if not jql or jql == "" then
+                vim.notify("Search cancelled", vim.log.levels.WARN)
+                return
+              end
+              M._do_search(jql, opts)
+            end)
+          end)
+        else
+          -- Run the selected query
+          M._do_search(entry.jql, opts)
+        end
+      end)
+
+      -- Ctrl-e: edit query before running
+      local edit_query = function()
+        local selection = action_state.get_selected_entry()
+        actions.close(prompt_bufnr)
+        if not selection then
+          return
+        end
+
+        local entry = selection.value
+        -- Schedule to let Telescope close cleanly
+        vim.schedule(function()
+          local default_jql = entry.jql or config.options.default_jql or ""
+          vim.ui.input({
+            prompt = "JQL Query: ",
+            default = default_jql,
+          }, function(jql)
+            if not jql or jql == "" then
+              vim.notify("Search cancelled", vim.log.levels.WARN)
+              return
+            end
+            M._do_search(jql, opts)
+          end)
+        end)
+      end
+      map("i", "<C-e>", edit_query)
+      map("n", "<C-e>", edit_query)
+
+      -- Ctrl-d: delete history entry
+      local delete_entry = function()
+        local selection = action_state.get_selected_entry()
+        if not selection then
+          return
+        end
+
+        local entry = selection.value
+        if entry.type ~= "history" then
+          vim.notify("Can only delete history entries", vim.log.levels.WARN)
+          return
+        end
+
+        if history.remove(entry.jql) then
+          vim.notify("Removed from history", vim.log.levels.INFO)
+          -- Refresh the picker
+          actions.close(prompt_bufnr)
+          M.query_picker(opts)
+        end
+      end
+      map("i", "<C-d>", delete_entry)
+      map("n", "<C-d>", delete_entry)
+
+      return true
+    end,
+  }):find()
+end
+
+--- Run a quick query by key (from quick_queries config)
+---@param key string quick query key (e.g., "m", "o")
+function M.quick_query(key)
+  -- Check credentials exist
+  if not auth.credentials_exist() then
+    vim.notify("JIRA credentials not configured. Run :JiraSetup first.", vim.log.levels.ERROR)
+    return
+  end
+
+  local quick = config.options.quick_queries or {}
+  local query = quick[key]
+
+  if not query then
+    vim.notify("Unknown quick query: " .. key, vim.log.levels.ERROR)
+    return
+  end
+
+  M._do_search(query.jql, {})
+end
+
+--- Repeat last search (show cached results without API call)
+function M.repeat_last()
+  if not M._last_results or #M._last_results == 0 then
+    vim.notify("No recent search to repeat", vim.log.levels.WARN)
+    return
+  end
+
+  vim.notify(string.format("Showing %d cached result(s) for: %s", #M._last_results, M._last_query or ""), vim.log.levels.INFO)
+  M.show_issues_picker(M._last_results, {})
 end
 
 return M

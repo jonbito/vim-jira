@@ -18,6 +18,27 @@ local mappings = {
       require("jira.telescope").search_issues()
     end,
   },
+  {
+    key = "m",
+    desc = "My issues",
+    fn = function()
+      require("jira.telescope").quick_query("m")
+    end,
+  },
+  {
+    key = "o",
+    desc = "My open issues",
+    fn = function()
+      require("jira.telescope").quick_query("o")
+    end,
+  },
+  {
+    key = "l",
+    desc = "Last search",
+    fn = function()
+      require("jira.telescope").repeat_last()
+    end,
+  },
 }
 
 --- Setup the plugin with user options

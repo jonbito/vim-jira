@@ -7,6 +7,12 @@ M.defaults = {
   api_version = "3",
   timeout = 30000,
   default_jql = "", -- Optional default JQL for search prompt
+  history_limit = 25, -- Maximum number of queries to store in history
+  saved_queries = {}, -- User-defined named queries: { name = { jql = "...", desc = "..." } }
+  quick_queries = {
+    m = { jql = "assignee = currentUser() ORDER BY updated DESC", desc = "My issues" },
+    o = { jql = "assignee = currentUser() AND status != Done ORDER BY updated DESC", desc = "My open issues" },
+  },
   keys = {
     prefix = "<leader>j",
   },
