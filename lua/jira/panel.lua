@@ -4,6 +4,7 @@ local M = {}
 
 local config = require("jira.config")
 local auth = require("jira.auth")
+local adf = require("jira.adf")
 
 -- Track current panel state
 M._bufnr = nil
@@ -87,6 +88,21 @@ local function build_content(issue)
   -- Dates
   table.insert(lines, "  Created:     " .. format_date(fields.created))
   table.insert(lines, "  Updated:     " .. format_date(fields.updated))
+  table.insert(lines, "")
+
+  -- Description
+  table.insert(lines, string.rep("─", 40))
+  table.insert(lines, "  Description:")
+  table.insert(lines, "")
+
+  local desc_lines = adf.to_lines(fields.description)
+  if #desc_lines == 0 then
+    table.insert(lines, "  (no description)")
+  else
+    for _, line in ipairs(desc_lines) do
+      table.insert(lines, "  " .. line)
+    end
+  end
   table.insert(lines, "")
 
   -- Separator and keybindings hint

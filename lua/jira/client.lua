@@ -14,7 +14,7 @@ local curl_errors = {
 }
 
 -- Default fields to return for issue searches
-local default_fields = { "summary", "status", "assignee", "priority", "issuetype", "created", "updated" }
+local default_fields = { "summary", "status", "assignee", "priority", "issuetype", "created", "updated", "description" }
 
 --- Build full URL from domain and endpoint
 ---@param domain string JIRA domain (e.g., "company.atlassian.net")
