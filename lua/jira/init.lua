@@ -8,6 +8,7 @@ local auth = require("jira.auth")
 -- Export submodules
 M.client = require("jira.client")
 M.telescope = require("jira.telescope")
+M.panel = require("jira.panel")
 
 -- Centralized keymapping definitions
 local mappings = {

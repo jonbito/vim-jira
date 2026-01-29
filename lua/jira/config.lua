@@ -21,6 +21,11 @@ M.defaults = {
     group_name = "JIRA", -- Group label in popup
     icon = "", -- Optional Nerd Font icon
   },
+  panel = {
+    width = 0.6, -- Width as fraction of screen
+    max_height = 0.6, -- Max height as fraction of screen
+    border = "rounded", -- Border style
+  },
 }
 
 M.options = {}

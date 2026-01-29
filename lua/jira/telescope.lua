@@ -115,7 +115,7 @@ function M.show_issues_picker(issues, opts)
 
   pickers.new(opts, {
     prompt_title = "JIRA Issues",
-    results_title = "Enter: open │ C-y: yank URL │ C-k: yank key",
+    results_title = "Enter: details │ C-y: yank URL │ C-k: yank key",
     finder = finders.new_table({
       results = issues,
       entry_maker = function(issue)
@@ -133,12 +133,12 @@ function M.show_issues_picker(issues, opts)
     }),
     sorter = conf.generic_sorter(opts),
     attach_mappings = function(prompt_bufnr, map)
-      -- Default action: open in browser
+      -- Default action: open details panel
       actions.select_default:replace(function()
         local selection = action_state.get_selected_entry()
         actions.close(prompt_bufnr)
         if selection then
-          M.open_issue_in_browser(selection.value)
+          require("jira.panel").open(selection.value)
         end
       end)
 
