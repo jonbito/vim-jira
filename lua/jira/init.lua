@@ -5,6 +5,9 @@ local M = {}
 local config = require("jira.config")
 local auth = require("jira.auth")
 
+-- Export submodules
+M.client = require("jira.client")
+
 --- Setup the plugin with user options
 ---@param opts table|nil user configuration options
 function M.setup(opts)
