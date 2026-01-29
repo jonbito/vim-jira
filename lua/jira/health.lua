@@ -7,6 +7,15 @@ local auth = require("jira.auth")
 function M.check()
   vim.health.start("vim-jira")
 
+  -- Check which-key integration
+  local whichkey = require("jira.whichkey")
+  local wk_available, wk_version = whichkey.is_available()
+  if wk_available then
+    vim.health.ok("which-key.nvim detected (" .. wk_version .. ")")
+  else
+    vim.health.info("which-key.nvim not installed (optional)")
+  end
+
   -- Check curl is installed
   if vim.fn.executable("curl") == 1 then
     vim.health.ok("curl is installed")
