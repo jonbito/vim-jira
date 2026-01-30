@@ -80,20 +80,29 @@ local function format_jira_error(status_code, body)
   -- Try to parse JIRA error format
   local ok, data = pcall(vim.json.decode, body)
   if ok then
+    local parts = {}
     if data.errorMessages and #data.errorMessages > 0 then
-      return table.concat(data.errorMessages, "; ")
+      table.insert(parts, table.concat(data.errorMessages, "; "))
     end
     if data.errors then
-      local msgs = {}
       for field, msg in pairs(data.errors) do
-        table.insert(msgs, field .. ": " .. msg)
-      end
-      if #msgs > 0 then
-        return table.concat(msgs, "; ")
+        if type(msg) == "table" then
+          -- Handle nested error objects
+          table.insert(parts, field .. ": " .. vim.inspect(msg))
+        else
+          table.insert(parts, field .. ": " .. tostring(msg))
+        end
       end
     end
     if data.message then
-      return data.message
+      table.insert(parts, data.message)
+    end
+    -- Include error code if present
+    if data.error then
+      table.insert(parts, "Error: " .. tostring(data.error))
+    end
+    if #parts > 0 then
+      return table.concat(parts, "; ")
     end
   end
 
@@ -109,7 +118,7 @@ local function format_jira_error(status_code, body)
     [503] = "Service unavailable",
   }
 
-  return messages[status_code] or ("HTTP error: " .. status_code)
+  return messages[status_code] or ("HTTP error: " .. status_code .. " - " .. body:sub(1, 200))
 end
 
 --- Core HTTP request function
@@ -317,6 +326,25 @@ function M.search_jql_all(params, callback, opts)
   end
 
   fetch_page(nil)
+end
+
+--- Update an issue's fields
+---@param issue_key string JIRA issue key (e.g., "PROJ-123")
+---@param fields table fields to update (e.g., { description = adf_doc })
+---@param callback function called with (success: boolean, result: table|string)
+---   On success: result = {} (empty for 204 No Content)
+---   On failure: result = "error message"
+function M.update_issue(issue_key, fields, callback)
+  if not issue_key or issue_key == "" then
+    vim.schedule(function()
+      callback(false, "Missing required parameter: issue_key")
+    end)
+    return
+  end
+
+  request("PUT", "/rest/api/" .. config.options.api_version .. "/issue/" .. issue_key, {
+    body = { fields = fields },
+  }, callback)
 end
 
 return M

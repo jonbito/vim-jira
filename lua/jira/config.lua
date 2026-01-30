@@ -26,6 +26,9 @@ M.defaults = {
     max_height = 0.6, -- Max height as fraction of screen
     border = "rounded", -- Border style
   },
+  edit = {
+    auto_close = true, -- Auto-close edit buffer after successful save
+  },
 }
 
 M.options = {}

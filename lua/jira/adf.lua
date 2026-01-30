@@ -83,8 +83,9 @@ local function render_inline(content, ctx)
       local shortName = node.attrs and node.attrs.shortName or ":emoji:"
       table.insert(parts, shortName)
     elseif node.type == "inlineCard" then
+      -- Preserve as special link format for round-tripping
       local url = node.attrs and node.attrs.url or ""
-      table.insert(parts, url)
+      table.insert(parts, "[jira:inlineCard](" .. url .. ")")
     else
       -- Try to render unknown inline nodes
       if node.content then
@@ -135,6 +136,8 @@ render_node = function(node, ctx)
     for line in (text .. "\n"):gmatch("([^\n]*)\n") do
       table.insert(lines, indent .. line)
     end
+    -- Add blank line after paragraph for markdown separation
+    table.insert(lines, "")
     return lines
   end
 
@@ -261,9 +264,19 @@ render_node = function(node, ctx)
   end
 
   -- Media/mediaSingle (images, attachments)
-  if node_type == "media" or node_type == "mediaSingle" then
-    if node.content then
-      return render_content(node.content, next_ctx)
+  -- Preserve as special marker to allow round-tripping
+  if node_type == "mediaSingle" then
+    local ok, json = pcall(vim.json.encode, node)
+    if ok then
+      return { indent .. "<!-- jira:mediaSingle " .. json .. " -->" }
+    end
+    return { indent .. "[media]" }
+  end
+
+  if node_type == "media" then
+    local ok, json = pcall(vim.json.encode, node)
+    if ok then
+      return { indent .. "<!-- jira:media " .. json .. " -->" }
     end
     local alt = node.attrs and node.attrs.alt or "[media]"
     return { indent .. alt }
@@ -336,7 +349,15 @@ render_node = function(node, ctx)
   -- Task item
   if node_type == "taskItem" then
     local state = node.attrs and node.attrs.state or "TODO"
-    local checkbox = state == "DONE" and "[x] " or "[ ] "
+    local localId = node.attrs and node.attrs.localId or ""
+    local check_char = state == "DONE" and "x" or " "
+    -- Include localId in checkbox format: [x|id] or [ |id]
+    local checkbox
+    if localId ~= "" then
+      checkbox = "[" .. check_char .. "|" .. localId .. "] "
+    else
+      checkbox = "[" .. check_char .. "] "
+    end
     local text = render_inline(node.content, next_ctx)
     return { indent .. checkbox .. text }
   end

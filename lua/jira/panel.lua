@@ -5,6 +5,8 @@ local M = {}
 local config = require("jira.config")
 local auth = require("jira.auth")
 local adf = require("jira.adf")
+local md_to_adf = require("jira.md_to_adf")
+local client = require("jira.client")
 
 -- Track current panel state
 M._bufnr = nil
@@ -107,7 +109,7 @@ local function build_content(issue)
 
   -- Separator and keybindings hint
   table.insert(lines, string.rep("─", 40))
-  table.insert(lines, "  [o] Open  [y] URL  [Y] Key  [q] Close")
+  table.insert(lines, "  [d] Edit  [o] Open  [y] URL  [Y] Key  [q] Close")
 
   return lines
 end
@@ -140,6 +142,120 @@ local function calc_window_dims(content_lines)
     row = row,
     col = col,
   }
+end
+
+--- Open edit buffer for description in a new buffer
+function M.edit_description()
+  if not M._issue then
+    vim.notify("No issue to edit", vim.log.levels.WARN)
+    return
+  end
+
+  -- Store issue data for the edit buffer
+  local issue_key = M._issue.key
+  local issue = M._issue
+
+  -- Get description as markdown lines
+  local desc_lines = adf.to_lines(issue.fields.description)
+  if #desc_lines == 0 then
+    desc_lines = { "" }
+  end
+
+  -- Close the panel first
+  M.close()
+
+  -- Create edit buffer
+  local edit_bufnr = vim.api.nvim_create_buf(false, true)
+
+  -- Set buffer content
+  vim.api.nvim_buf_set_lines(edit_bufnr, 0, -1, false, desc_lines)
+
+  -- Buffer options - set buftype before opening to avoid write prompts
+  vim.bo[edit_bufnr].buftype = "acwrite"
+  vim.bo[edit_bufnr].filetype = "markdown"
+
+  -- Set buffer name for display
+  vim.api.nvim_buf_set_name(edit_bufnr, "jira://" .. issue_key .. "/description")
+
+  -- Open the buffer in current window BEFORE setting bufhidden
+  vim.api.nvim_set_current_buf(edit_bufnr)
+
+  -- Now safe to set bufhidden since buffer is displayed
+  vim.bo[edit_bufnr].bufhidden = "wipe"
+  vim.bo[edit_bufnr].modified = false
+
+  -- Helper to close edit buffer (switch to alternate, bufhidden=wipe handles deletion)
+  local function close_edit_buffer()
+    if not vim.api.nvim_buf_is_valid(edit_bufnr) then
+      return
+    end
+    local alt = vim.fn.bufnr("#")
+    if alt ~= -1 and alt ~= edit_bufnr and vim.api.nvim_buf_is_valid(alt) then
+      vim.api.nvim_set_current_buf(alt)
+    else
+      vim.cmd("bprevious")
+    end
+  end
+
+  -- Keymap to discard and close
+  vim.keymap.set("n", "q", close_edit_buffer, { buffer = edit_bufnr, noremap = true, silent = true })
+
+  -- Intercept :w to submit to JIRA
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    buffer = edit_bufnr,
+    callback = function()
+      -- Get markdown lines from edit buffer
+      local lines = vim.api.nvim_buf_get_lines(edit_bufnr, 0, -1, false)
+
+      -- Convert to ADF
+      local adf_doc = md_to_adf.from_lines(lines)
+
+      -- Debug: write ADF to temp file for inspection
+      local debug_path = vim.fn.stdpath("cache") .. "/jira_adf_debug.json"
+      local ok, json = pcall(vim.json.encode, adf_doc)
+      if ok then
+        local f = io.open(debug_path, "w")
+        if f then
+          f:write(json)
+          f:close()
+        end
+      end
+
+      -- Show saving indicator
+      vim.notify("Saving description for " .. issue_key .. "... (debug: " .. debug_path .. ")", vim.log.levels.INFO)
+
+      -- Update via API
+      client.update_issue(issue_key, { description = adf_doc }, function(success, result)
+        if success then
+          vim.notify("Description updated for " .. issue_key, vim.log.levels.INFO)
+
+          -- Update stored issue data
+          issue.fields.description = adf_doc
+
+          -- Mark buffer as not modified
+          if vim.api.nvim_buf_is_valid(edit_bufnr) then
+            vim.bo[edit_bufnr].modified = false
+          end
+
+          -- Auto-close edit buffer if configured
+          local opts = config.options.edit or {}
+          if opts.auto_close ~= false and vim.api.nvim_buf_is_valid(edit_bufnr) then
+            -- Switch to alternate buffer - bufhidden=wipe will auto-delete the edit buffer
+            local alt = vim.fn.bufnr("#")
+            if alt ~= -1 and alt ~= edit_bufnr and vim.api.nvim_buf_is_valid(alt) then
+              vim.api.nvim_set_current_buf(alt)
+            else
+              vim.cmd("bprevious")
+            end
+          end
+        else
+          vim.notify("Failed to update description: " .. tostring(result), vim.log.levels.ERROR)
+        end
+      end)
+    end,
+  })
+
+  vim.notify("Editing " .. issue_key .. " description - :w to save, q to discard", vim.log.levels.INFO)
 end
 
 --- Close the panel
@@ -256,6 +372,9 @@ function M.open(issue)
 
   -- Yank key
   vim.keymap.set("n", "Y", M.yank_key, keymap_opts)
+
+  -- Edit description
+  vim.keymap.set("n", "d", M.edit_description, keymap_opts)
 
   -- Auto-close on buffer leave
   vim.api.nvim_create_autocmd("BufLeave", {
