@@ -347,4 +347,68 @@ function M.update_issue(issue_key, fields, callback)
   }, callback)
 end
 
+--- Get available status transitions for an issue
+---@param issue_key string JIRA issue key (e.g., "PROJ-123")
+---@param callback function called with (success: boolean, result: table|string)
+---   On success: result = { transitions = [{ id, name, to = { name } }, ...] }
+---   On failure: result = "error message"
+function M.get_transitions(issue_key, callback)
+  if not issue_key or issue_key == "" then
+    vim.schedule(function()
+      callback(false, "Missing required parameter: issue_key")
+    end)
+    return
+  end
+
+  request("GET", "/rest/api/" .. config.options.api_version .. "/issue/" .. issue_key .. "/transitions", {}, callback)
+end
+
+--- Transition an issue to a new status
+---@param issue_key string JIRA issue key (e.g., "PROJ-123")
+---@param transition_id string transition ID from get_transitions
+---@param callback function called with (success: boolean, result: table|string)
+---   On success: result = {} (empty for 204 No Content)
+---   On failure: result = "error message"
+function M.transition_issue(issue_key, transition_id, callback)
+  if not issue_key or issue_key == "" then
+    vim.schedule(function()
+      callback(false, "Missing required parameter: issue_key")
+    end)
+    return
+  end
+
+  if not transition_id or transition_id == "" then
+    vim.schedule(function()
+      callback(false, "Missing required parameter: transition_id")
+    end)
+    return
+  end
+
+  request("POST", "/rest/api/" .. config.options.api_version .. "/issue/" .. issue_key .. "/transitions", {
+    body = { transition = { id = transition_id } },
+  }, callback)
+end
+
+--- Get users who can be assigned to an issue
+---@param issue_key string JIRA issue key (e.g., "PROJ-123")
+---@param query string|nil optional search query to filter users
+---@param callback function called with (success: boolean, result: table|string)
+---   On success: result = array of user objects { accountId, displayName, emailAddress, ... }
+---   On failure: result = "error message"
+function M.get_assignable_users(issue_key, query, callback)
+  if not issue_key or issue_key == "" then
+    vim.schedule(function()
+      callback(false, "Missing required parameter: issue_key")
+    end)
+    return
+  end
+
+  local endpoint = "/rest/api/" .. config.options.api_version .. "/user/assignable/search?issueKey=" .. issue_key
+  if query and query ~= "" then
+    endpoint = endpoint .. "&query=" .. vim.uri_encode(query)
+  end
+
+  request("GET", endpoint, {}, callback)
+end
+
 return M

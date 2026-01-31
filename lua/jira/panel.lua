@@ -58,7 +58,8 @@ end
 ---@param user table|nil JIRA user object
 ---@return string display name or "Unassigned"
 local function get_user_name(user)
-  if not user then
+  -- Handle nil, vim.NIL (JSON null), or missing user
+  if not user or user == vim.NIL then
     return "Unassigned"
   end
   return user.displayName or user.name or "Unknown"
@@ -106,10 +107,6 @@ local function build_content(issue)
     end
   end
   table.insert(lines, "")
-
-  -- Separator and keybindings hint
-  table.insert(lines, string.rep("─", 40))
-  table.insert(lines, "  [d] Edit  [o] Open  [y] URL  [Y] Key  [q] Close")
 
   return lines
 end
@@ -184,9 +181,10 @@ function M.edit_description()
   vim.bo[edit_bufnr].bufhidden = "wipe"
   vim.bo[edit_bufnr].modified = false
 
-  -- Helper to close edit buffer (switch to alternate, bufhidden=wipe handles deletion)
-  local function close_edit_buffer()
+  -- Helper to close edit buffer and reopen panel
+  local function close_edit_buffer_and_reopen()
     if not vim.api.nvim_buf_is_valid(edit_bufnr) then
+      M.open(issue)
       return
     end
     local alt = vim.fn.bufnr("#")
@@ -195,10 +193,14 @@ function M.edit_description()
     else
       vim.cmd("bprevious")
     end
+    -- Reopen panel after switching buffer
+    vim.schedule(function()
+      M.open(issue)
+    end)
   end
 
   -- Keymap to discard and close
-  vim.keymap.set("n", "q", close_edit_buffer, { buffer = edit_bufnr, noremap = true, silent = true })
+  vim.keymap.set("n", "q", close_edit_buffer_and_reopen, { buffer = edit_bufnr, noremap = true, silent = true })
 
   -- Intercept :w to submit to JIRA
   vim.api.nvim_create_autocmd("BufWriteCmd", {
@@ -247,6 +249,10 @@ function M.edit_description()
             else
               vim.cmd("bprevious")
             end
+            -- Reopen panel with updated issue
+            vim.schedule(function()
+              M.open(issue)
+            end)
           end
         else
           vim.notify("Failed to update description: " .. tostring(result), vim.log.levels.ERROR)
@@ -256,6 +262,243 @@ function M.edit_description()
   })
 
   vim.notify("Editing " .. issue_key .. " description - :w to save, q to discard", vim.log.levels.INFO)
+end
+
+--- Open inline prompt to edit summary
+function M.edit_summary()
+  if not M._issue then
+    vim.notify("No issue to edit", vim.log.levels.WARN)
+    return
+  end
+
+  local issue_key = M._issue.key
+  local issue = M._issue
+  local current_summary = issue.fields.summary or ""
+
+  -- Use vim.ui.input for single-line summary editing
+  vim.ui.input({
+    prompt = "Summary: ",
+    default = current_summary,
+  }, function(new_summary)
+    -- User cancelled
+    if new_summary == nil then
+      return
+    end
+
+    -- No change
+    if new_summary == current_summary then
+      vim.notify("Summary unchanged", vim.log.levels.INFO)
+      return
+    end
+
+    -- Validate non-empty
+    if new_summary == "" then
+      vim.notify("Summary cannot be empty", vim.log.levels.WARN)
+      return
+    end
+
+    vim.notify("Saving summary for " .. issue_key .. "...", vim.log.levels.INFO)
+
+    client.update_issue(issue_key, { summary = new_summary }, function(success, result)
+      if success then
+        vim.notify("Summary updated for " .. issue_key, vim.log.levels.INFO)
+        -- Update stored issue data
+        issue.fields.summary = new_summary
+        -- Refresh panel display
+        M.refresh()
+      else
+        vim.notify("Failed to update summary: " .. tostring(result), vim.log.levels.ERROR)
+      end
+    end)
+  end)
+end
+
+--- Change issue status via transition picker
+function M.change_status()
+  if not M._issue then
+    vim.notify("No issue to update", vim.log.levels.WARN)
+    return
+  end
+
+  local issue_key = M._issue.key
+  local issue = M._issue
+
+  vim.notify("Fetching available statuses...", vim.log.levels.INFO)
+
+  client.get_transitions(issue_key, function(success, result)
+    if not success then
+      vim.notify("Failed to get transitions: " .. tostring(result), vim.log.levels.ERROR)
+      return
+    end
+
+    local transitions = result.transitions or {}
+    if #transitions == 0 then
+      vim.notify("No status transitions available", vim.log.levels.WARN)
+      return
+    end
+
+    -- Build items for picker
+    local items = {}
+    for _, t in ipairs(transitions) do
+      table.insert(items, { id = t.id, name = t.name, to_name = t.to and t.to.name or t.name })
+    end
+
+    -- Show picker
+    vim.ui.select(items, {
+      prompt = "Select status:",
+      format_item = function(item)
+        return item.name
+      end,
+    }, function(selected)
+      if not selected then
+        return
+      end
+
+      vim.notify("Changing status to " .. selected.to_name .. "...", vim.log.levels.INFO)
+
+      client.transition_issue(issue_key, selected.id, function(ok, err)
+        if ok then
+          vim.notify("Status changed to " .. selected.to_name, vim.log.levels.INFO)
+          -- Update local issue data
+          issue.fields.status = { name = selected.to_name }
+          M.refresh()
+        else
+          vim.notify("Failed to change status: " .. tostring(err), vim.log.levels.ERROR)
+        end
+      end)
+    end)
+  end)
+end
+
+--- Change issue assignee via Telescope picker
+function M.change_assignee()
+  if not M._issue then
+    vim.notify("No issue to update", vim.log.levels.WARN)
+    return
+  end
+
+  local issue_key = M._issue.key
+  local issue = M._issue
+
+  vim.notify("Fetching assignable users...", vim.log.levels.INFO)
+
+  client.get_assignable_users(issue_key, nil, function(success, result)
+    if not success then
+      vim.notify("Failed to get assignable users: " .. tostring(result), vim.log.levels.ERROR)
+      return
+    end
+
+    local users = result or {}
+
+    -- Build items for Telescope picker
+    local pickers = require("telescope.pickers")
+    local finders = require("telescope.finders")
+    local conf = require("telescope.config").values
+    local actions = require("telescope.actions")
+    local action_state = require("telescope.actions.state")
+
+    -- Create entries with "Unassigned" option first
+    local entries = {
+      { accountId = nil, displayName = "Unassigned", emailAddress = nil },
+    }
+    for _, user in ipairs(users) do
+      table.insert(entries, user)
+    end
+
+    pickers
+      .new({}, {
+        prompt_title = "Select Assignee for " .. issue_key,
+        finder = finders.new_table({
+          results = entries,
+          entry_maker = function(user)
+            local display
+            if user.emailAddress then
+              display = user.displayName .. " (" .. user.emailAddress .. ")"
+            else
+              display = user.displayName
+            end
+            return {
+              value = user,
+              display = display,
+              ordinal = user.displayName .. " " .. (user.emailAddress or ""),
+            }
+          end,
+        }),
+        sorter = conf.generic_sorter({}),
+        attach_mappings = function(prompt_bufnr, map)
+          -- Handle cancel - reopen panel
+          local function cancel_and_reopen()
+            actions.close(prompt_bufnr)
+            vim.schedule(function()
+              M.open(issue)
+            end)
+          end
+          map("i", "<Esc>", cancel_and_reopen)
+          map("n", "<Esc>", cancel_and_reopen)
+          map("n", "q", cancel_and_reopen)
+          map("i", "<C-c>", cancel_and_reopen)
+
+          actions.select_default:replace(function()
+            actions.close(prompt_bufnr)
+            local selection = action_state.get_selected_entry()
+            if not selection then
+              vim.schedule(function()
+                M.open(issue)
+              end)
+              return
+            end
+
+            local selected_user = selection.value
+            local assignee_field
+
+            if selected_user.accountId == nil then
+              -- Unassign: set assignee to null
+              assignee_field = vim.NIL
+              vim.notify("Unassigning " .. issue_key .. "...", vim.log.levels.INFO)
+            else
+              assignee_field = { accountId = selected_user.accountId }
+              vim.notify("Assigning " .. issue_key .. " to " .. selected_user.displayName .. "...", vim.log.levels.INFO)
+            end
+
+            client.update_issue(issue_key, { assignee = assignee_field }, function(ok, err)
+              if ok then
+                if selected_user.accountId == nil then
+                  vim.notify("Unassigned " .. issue_key, vim.log.levels.INFO)
+                  issue.fields.assignee = nil
+                else
+                  vim.notify("Assigned " .. issue_key .. " to " .. selected_user.displayName, vim.log.levels.INFO)
+                  issue.fields.assignee = {
+                    accountId = selected_user.accountId,
+                    displayName = selected_user.displayName,
+                    emailAddress = selected_user.emailAddress,
+                  }
+                end
+                -- Reopen panel with updated issue
+                M.open(issue)
+              else
+                vim.notify("Failed to change assignee: " .. tostring(err), vim.log.levels.ERROR)
+                -- Reopen panel even on failure
+                M.open(issue)
+              end
+            end)
+          end)
+          return true
+        end,
+      })
+      :find()
+  end)
+end
+
+--- Refresh panel content with current issue data
+function M.refresh()
+  if not M._issue or not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then
+    return
+  end
+
+  local content = build_content(M._issue)
+  vim.bo[M._bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(M._bufnr, 0, -1, false, content)
+  vim.bo[M._bufnr].modifiable = false
 end
 
 --- Close the panel
@@ -351,6 +594,8 @@ function M.open(issue)
     border = border,
     title = " " .. issue.key .. " ",
     title_pos = "center",
+    footer = " [a]Assignee [s]Summary [d]Desc [S]Status [o]Open [y]URL [Y]Key [q]Close ",
+    footer_pos = "center",
   })
 
   -- Window options
@@ -375,6 +620,15 @@ function M.open(issue)
 
   -- Edit description
   vim.keymap.set("n", "d", M.edit_description, keymap_opts)
+
+  -- Edit summary
+  vim.keymap.set("n", "s", M.edit_summary, keymap_opts)
+
+  -- Change status
+  vim.keymap.set("n", "S", M.change_status, keymap_opts)
+
+  -- Change assignee
+  vim.keymap.set("n", "a", M.change_assignee, keymap_opts)
 
   -- Auto-close on buffer leave
   vim.api.nvim_create_autocmd("BufLeave", {
