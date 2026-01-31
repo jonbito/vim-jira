@@ -65,25 +65,19 @@ local function get_user_name(user)
   return user.displayName or user.name or "Unknown"
 end
 
---- Get sprint name from sprint field value
----@param fields table issue fields
----@return string sprint name(s) or "None"
-local function get_sprint_name(fields)
-  local sprint_field = config.options.sprint_field
-  if not sprint_field or sprint_field == "" then
-    return "None"
-  end
-
-  local sprint_data = fields[sprint_field]
+--- Format a sprint field value
+---@param value any sprint field value
+---@return string formatted sprint name(s) or "None"
+local function format_sprint(value)
   -- Handle nil, vim.NIL (JSON null), or empty
-  if not sprint_data or sprint_data == vim.NIL then
+  if not value or value == vim.NIL then
     return "None"
   end
 
   -- Sprint data is typically an array of sprint objects
-  if type(sprint_data) == "table" then
+  if type(value) == "table" then
     local names = {}
-    for _, sprint in ipairs(sprint_data) do
+    for _, sprint in ipairs(value) do
       if type(sprint) == "table" and sprint.name then
         -- Show state indicator for active/future sprints
         local name = sprint.name
@@ -101,11 +95,90 @@ local function get_sprint_name(fields)
     if #names > 0 then
       return table.concat(names, ", ")
     end
-  elseif type(sprint_data) == "string" then
-    return sprint_data
+  elseif type(value) == "string" then
+    return value
   end
 
   return "None"
+end
+
+--- Format a user field value
+---@param value any user field value
+---@return string formatted user name or "None"
+local function format_user(value)
+  if not value or value == vim.NIL then
+    return "None"
+  end
+  if type(value) == "table" then
+    return value.displayName or value.name or "Unknown"
+  elseif type(value) == "string" then
+    return value
+  end
+  return "None"
+end
+
+--- Format a generic custom field value
+---@param value any field value
+---@return string formatted value or "None"
+local function format_default(value)
+  -- Handle nil, vim.NIL (JSON null), or empty
+  if value == nil or value == vim.NIL then
+    return "None"
+  end
+
+  -- Numbers: format as integer if whole, otherwise with decimals
+  if type(value) == "number" then
+    if value == math.floor(value) then
+      return tostring(math.floor(value))
+    else
+      return string.format("%.1f", value)
+    end
+  end
+
+  -- Strings: return as-is
+  if type(value) == "string" then
+    return value ~= "" and value or "None"
+  end
+
+  -- Tables with name property (common JIRA pattern)
+  if type(value) == "table" then
+    if value.name then
+      return value.name
+    end
+    if value.value then
+      return tostring(value.value)
+    end
+    -- Array of values: join them
+    if #value > 0 then
+      local parts = {}
+      for _, v in ipairs(value) do
+        if type(v) == "table" and v.name then
+          table.insert(parts, v.name)
+        elseif type(v) == "string" then
+          table.insert(parts, v)
+        end
+      end
+      if #parts > 0 then
+        return table.concat(parts, ", ")
+      end
+    end
+  end
+
+  return "None"
+end
+
+--- Format a custom field value based on type
+---@param value any field value
+---@param field_type string|nil field type hint
+---@return string formatted value
+local function format_custom_field(value, field_type)
+  if field_type == "sprint" then
+    return format_sprint(value)
+  elseif field_type == "user" then
+    return format_user(value)
+  else
+    return format_default(value)
+  end
 end
 
 --- Build panel content lines
@@ -129,7 +202,19 @@ local function build_content(issue)
   table.insert(lines, "  Type:        " .. issue_type)
   table.insert(lines, "  Priority:    " .. priority)
   table.insert(lines, "  Assignee:    " .. get_user_name(fields.assignee))
-  table.insert(lines, "  Sprint:      " .. get_sprint_name(fields))
+
+  -- Add custom fields from config
+  local custom_fields = config.options.custom_fields or {}
+  for _, cf in ipairs(custom_fields) do
+    if cf.id and cf.label then
+      local value = fields[cf.id]
+      local formatted = format_custom_field(value, cf.type)
+      -- Pad label to align values (12 chars like other fields)
+      local label = cf.label .. ":"
+      local padding = string.rep(" ", math.max(1, 12 - #label))
+      table.insert(lines, "  " .. label .. padding .. formatted)
+    end
+  end
   table.insert(lines, "")
 
   -- Dates

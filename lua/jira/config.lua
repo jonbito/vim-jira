@@ -29,7 +29,15 @@ M.defaults = {
   edit = {
     auto_close = true, -- Auto-close edit buffer after successful save
   },
-  sprint_field = "customfield_10020", -- Custom field ID for sprint (varies by JIRA instance)
+  -- Custom fields to display in the issue panel
+  -- Each entry: { id = "customfield_XXXXX", label = "Display Label", type = "sprint"|"user"|nil }
+  -- Use :JiraFields to discover field IDs for your instance
+  -- Example:
+  --   custom_fields = {
+  --     { id = "customfield_10020", label = "Sprint", type = "sprint" },
+  --     { id = "customfield_10016", label = "Story Pts" },
+  --   },
+  custom_fields = {},
 }
 
 M.options = {}

@@ -16,14 +16,16 @@ local curl_errors = {
 -- Default fields to return for issue searches
 local default_fields = { "summary", "status", "assignee", "priority", "issuetype", "created", "updated", "description" }
 
---- Get fields list including sprint field from config
+--- Get fields list including custom fields from config
 ---@return table fields array
 local function get_default_fields()
   local fields = vim.deepcopy(default_fields)
-  -- Add sprint field from config
-  local sprint_field = config.options.sprint_field
-  if sprint_field and sprint_field ~= "" then
-    table.insert(fields, sprint_field)
+  -- Add custom fields from config
+  local custom_fields = config.options.custom_fields or {}
+  for _, cf in ipairs(custom_fields) do
+    if cf.id and cf.id ~= "" then
+      table.insert(fields, cf.id)
+    end
   end
   return fields
 end
@@ -429,6 +431,14 @@ function M.get_assignable_users(issue_key, query, callback)
   end
 
   request("GET", endpoint, {}, callback)
+end
+
+--- Get all available fields (system and custom)
+---@param callback function called with (success: boolean, result: table|string)
+---   On success: result = array of field objects { id, name, custom, schema, ... }
+---   On failure: result = "error message"
+function M.get_fields(callback)
+  request("GET", "/rest/api/" .. config.options.api_version .. "/field", {}, callback)
 end
 
 return M
