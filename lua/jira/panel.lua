@@ -65,6 +65,49 @@ local function get_user_name(user)
   return user.displayName or user.name or "Unknown"
 end
 
+--- Get sprint name from sprint field value
+---@param fields table issue fields
+---@return string sprint name(s) or "None"
+local function get_sprint_name(fields)
+  local sprint_field = config.options.sprint_field
+  if not sprint_field or sprint_field == "" then
+    return "None"
+  end
+
+  local sprint_data = fields[sprint_field]
+  -- Handle nil, vim.NIL (JSON null), or empty
+  if not sprint_data or sprint_data == vim.NIL then
+    return "None"
+  end
+
+  -- Sprint data is typically an array of sprint objects
+  if type(sprint_data) == "table" then
+    local names = {}
+    for _, sprint in ipairs(sprint_data) do
+      if type(sprint) == "table" and sprint.name then
+        -- Show state indicator for active/future sprints
+        local name = sprint.name
+        if sprint.state == "active" then
+          name = name .. " (active)"
+        elseif sprint.state == "future" then
+          name = name .. " (future)"
+        end
+        table.insert(names, name)
+      elseif type(sprint) == "string" then
+        -- Some JIRA instances return sprint as a string
+        table.insert(names, sprint)
+      end
+    end
+    if #names > 0 then
+      return table.concat(names, ", ")
+    end
+  elseif type(sprint_data) == "string" then
+    return sprint_data
+  end
+
+  return "None"
+end
+
 --- Build panel content lines
 ---@param issue table JIRA issue object
 ---@return table lines array of strings
@@ -86,6 +129,7 @@ local function build_content(issue)
   table.insert(lines, "  Type:        " .. issue_type)
   table.insert(lines, "  Priority:    " .. priority)
   table.insert(lines, "  Assignee:    " .. get_user_name(fields.assignee))
+  table.insert(lines, "  Sprint:      " .. get_sprint_name(fields))
   table.insert(lines, "")
 
   -- Dates
@@ -332,15 +376,20 @@ function M.change_status()
     end
 
     local transitions = result.transitions or {}
-    if #transitions == 0 then
-      vim.notify("No status transitions available", vim.log.levels.WARN)
-      return
-    end
+    local current_status = issue.fields.status and issue.fields.status.name or nil
 
-    -- Build items for picker
+    -- Build items for picker, excluding current status
     local items = {}
     for _, t in ipairs(transitions) do
-      table.insert(items, { id = t.id, name = t.name, to_name = t.to and t.to.name or t.name })
+      local to_name = t.to and t.to.name or t.name
+      if to_name ~= current_status then
+        table.insert(items, { id = t.id, name = t.name, to_name = to_name })
+      end
+    end
+
+    if #items == 0 then
+      vim.notify("No status transitions available", vim.log.levels.WARN)
+      return
     end
 
     -- Show picker
@@ -489,6 +538,57 @@ function M.change_assignee()
   end)
 end
 
+--- Change issue priority via picker
+function M.change_priority()
+  if not M._issue then
+    vim.notify("No issue to update", vim.log.levels.WARN)
+    return
+  end
+
+  local issue_key = M._issue.key
+  local issue = M._issue
+
+  vim.notify("Fetching available priorities...", vim.log.levels.INFO)
+
+  client.get_priorities(function(success, result)
+    if not success then
+      vim.notify("Failed to get priorities: " .. tostring(result), vim.log.levels.ERROR)
+      return
+    end
+
+    local priorities = result or {}
+    if #priorities == 0 then
+      vim.notify("No priorities available", vim.log.levels.WARN)
+      return
+    end
+
+    -- Show picker
+    vim.ui.select(priorities, {
+      prompt = "Select priority:",
+      format_item = function(item)
+        return item.name
+      end,
+    }, function(selected)
+      if not selected then
+        return
+      end
+
+      vim.notify("Changing priority to " .. selected.name .. "...", vim.log.levels.INFO)
+
+      client.update_issue(issue_key, { priority = { id = selected.id } }, function(ok, err)
+        if ok then
+          vim.notify("Priority changed to " .. selected.name, vim.log.levels.INFO)
+          -- Update local issue data
+          issue.fields.priority = { id = selected.id, name = selected.name }
+          M.refresh()
+        else
+          vim.notify("Failed to change priority: " .. tostring(err), vim.log.levels.ERROR)
+        end
+      end)
+    end)
+  end)
+end
+
 --- Refresh panel content with current issue data
 function M.refresh()
   if not M._issue or not M._bufnr or not vim.api.nvim_buf_is_valid(M._bufnr) then
@@ -594,7 +694,7 @@ function M.open(issue)
     border = border,
     title = " " .. issue.key .. " ",
     title_pos = "center",
-    footer = " [a]Assignee [s]Summary [d]Desc [S]Status [o]Open [y]URL [Y]Key [q]Close ",
+    footer = " [a]Assignee [p]Priority [S]Summary [d]Desc [s]Status [o]Open [y]URL [Y]Key [q]Close ",
     footer_pos = "center",
   })
 
@@ -622,13 +722,16 @@ function M.open(issue)
   vim.keymap.set("n", "d", M.edit_description, keymap_opts)
 
   -- Edit summary
-  vim.keymap.set("n", "s", M.edit_summary, keymap_opts)
+  vim.keymap.set("n", "S", M.edit_summary, keymap_opts)
 
   -- Change status
-  vim.keymap.set("n", "S", M.change_status, keymap_opts)
+  vim.keymap.set("n", "s", M.change_status, keymap_opts)
 
   -- Change assignee
   vim.keymap.set("n", "a", M.change_assignee, keymap_opts)
+
+  -- Change priority
+  vim.keymap.set("n", "p", M.change_priority, keymap_opts)
 
   -- Auto-close on buffer leave
   vim.api.nvim_create_autocmd("BufLeave", {

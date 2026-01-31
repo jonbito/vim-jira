@@ -16,6 +16,18 @@ local curl_errors = {
 -- Default fields to return for issue searches
 local default_fields = { "summary", "status", "assignee", "priority", "issuetype", "created", "updated", "description" }
 
+--- Get fields list including sprint field from config
+---@return table fields array
+local function get_default_fields()
+  local fields = vim.deepcopy(default_fields)
+  -- Add sprint field from config
+  local sprint_field = config.options.sprint_field
+  if sprint_field and sprint_field ~= "" then
+    table.insert(fields, sprint_field)
+  end
+  return fields
+end
+
 --- Build full URL from domain and endpoint
 ---@param domain string JIRA domain (e.g., "company.atlassian.net")
 ---@param endpoint string API endpoint (e.g., "/rest/api/3/search/jql")
@@ -247,7 +259,7 @@ function M.search_jql(params, callback)
 
   local body = {
     jql = params.jql,
-    fields = params.fields or default_fields,
+    fields = params.fields or get_default_fields(),
     maxResults = params.maxResults or 50,
   }
 
@@ -387,6 +399,14 @@ function M.transition_issue(issue_key, transition_id, callback)
   request("POST", "/rest/api/" .. config.options.api_version .. "/issue/" .. issue_key .. "/transitions", {
     body = { transition = { id = transition_id } },
   }, callback)
+end
+
+--- Get all available priorities
+---@param callback function called with (success: boolean, result: table|string)
+---   On success: result = array of priority objects { id, name, iconUrl, ... }
+---   On failure: result = "error message"
+function M.get_priorities(callback)
+  request("GET", "/rest/api/" .. config.options.api_version .. "/priority", {}, callback)
 end
 
 --- Get users who can be assigned to an issue

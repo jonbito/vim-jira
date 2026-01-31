@@ -29,6 +29,7 @@ M.defaults = {
   edit = {
     auto_close = true, -- Auto-close edit buffer after successful save
   },
+  sprint_field = "customfield_10020", -- Custom field ID for sprint (varies by JIRA instance)
 }
 
 M.options = {}
